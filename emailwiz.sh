@@ -219,8 +219,7 @@ plugin {
 	sieve_default = /var/lib/dovecot/sieve/default.sieve
 	sieve_dir = ~/.sieve
 	sieve_global = /var/lib/dovecot/sieve/
-}
-" > /etc/dovecot/dovecot.conf
+}" > /etc/dovecot/dovecot.conf
 
 mkdir -p /var/lib/dovecot/
 mkdir -p /var/lib/dovecot/sieve/
@@ -281,7 +280,7 @@ sed -i '/Socket/s/^#*/#/' /etc/opendkim/opendkim.conf
 grep -q '^Socket\s*inet:12301@localhost' /etc/opendkim/opendkim.conf || echo 'Socket inet:12301@localhost' >> /etc/opendkim/opendkim.conf
 
 # Here we add to postconf the needed settings for working with OpenDKIM
-echo "Configuring Postfix with OpenDKIM settings..."
+echo 'Configuring Postfix with OpenDKIM settings...'
 postconf -e 'smtpd_sasl_security_options = noanonymous, noplaintext'
 postconf -e 'smtpd_sasl_tls_security_options = noanonymous'
 postconf -e "myhostname = $domain"
@@ -291,17 +290,14 @@ postconf -e 'smtpd_milters = inet:localhost:12301'
 postconf -e 'non_smtpd_milters = inet:localhost:12301'
 postconf -e 'mailbox_command = /usr/lib/dovecot/deliver'
 
-for x in spamassassin opendkim dovecot postfix; do
-	printf "Restarting %s..." "$x"
-	systemctl enable restart "$x" && printf " ...done\\n"
-done
+useradd -mG mail dmarc
+
+systemctl enable --now spamassassin opendkim dovecot postfix
 
 pval="$(tr -d "\n" </etc/postfix/dkim/$subdom.txt | sed "s/k=rsa.* \"p=/k=rsa; p=/;s/\"\s*\"//;s/\"\s*).*//" | grep -o "p=.*")"
 dkimentry="$subdom._domainkey.$domain	TXT	v=DKIM1; k=rsa; $pval"
 dmarcentry="_dmarc.$domain	TXT	v=DMARC1; p=reject; rua=mailto:dmarc@$domain; fo=1"
 spfentry="$domain	TXT	v=spf1 mx a:$maildomain -all"
-
-useradd -m -G mail dmarc
 
 echo "$dkimentry
 $dmarcentry
@@ -331,4 +327,3 @@ Also, these are now saved to \033[34m~/dns_emailwizard\033[0m in case you want t
 Once you do that, you're done! Check the README for how to add users/accounts
 and how to log in.
 "
-
