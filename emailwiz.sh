@@ -61,6 +61,9 @@ postconf -e "smtpd_tls_key_file=$certdir/privkey.pem"
 postconf -e "smtpd_tls_cert_file=$certdir/fullchain.pem"
 postconf -e "smtp_tls_CAfile=$certdir/cert.pem"
 
+# DH parameters
+postconf -e 'smtpd_tls_dh1024_param_file = /etc/dovecot/dh.pem'
+
 # Enable, but do not require TLS. Requiring it with other server would cause
 # mail delivery problems and requiring it locally would cause many other
 # issues.
@@ -79,7 +82,9 @@ postconf -e 'smtp_tls_protocols = >=TLSv1.2, <=TLSv1.3'
 # Exclude suboptimal ciphers.
 postconf -e 'tls_preempt_cipherlist = yes'
 postconf -e 'smtpd_tls_ciphers = high'
-postconf -e 'smtpd_tls_exclude_ciphers = aNULL, eNULL, EXPORT, LOW, EXP, MEDIUM, ADH, AECDH, DSS, ECDSA, CAMELLIA128, 3DES, CAMELLIA256, RSA+AES, DES, RC4, MD5, PSK, aECDH, EDH-DSS-DES-CBC3-SHA, EDH-RSA-DES-CBC3-SHA, KRB5-DES, CBC3-SHA'
+postconf -e 'smtpd_tls_exclude_ciphers = aNULL, eNULL, EXPORT, LOW, EXP, MEDIUM, ADH, AECDH, DSS, ECDSA, CAMELLIA128, 3DES, CAMELLIA256, RSA+AES, DES, RC4, MD5, PSK, aECDH, EDH-DSS-DES-CBC3-SHA, EDH-RSA-DES-CBC3-SHA, KRB5-DES, CBC3-SHA, SHA1, SHA256, SHA384'
+# Disable insecure renegotiation
+postconf -e 'tls_ssl_options = NO_RENEGOTIATION'
 
 # Here we tell Postfix to look to Dovecot for authenticating users/passwords.
 # Dovecot will be putting an authentication socket in /var/spool/postfix/private/auth
@@ -131,7 +136,7 @@ spamassassin unix -     n       n       -       -       pipe
 echo 'Generating a DH parameters file for Dovecot...'
 
 mkdir -p /etc/dovecot
-openssl dhparam -out /etc/dovecot/dh.pem 4096
+openssl dhparam -out /etc/dovecot/dh.pem 3072
 
 echo 'Creating Dovecot config...'
 
@@ -146,7 +151,7 @@ ssl = required
 ssl_cert = <$certdir/fullchain.pem
 ssl_key = <$certdir/privkey.pem
 ssl_min_protocol = TLSv1.2
-ssl_cipher_list=ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-DSS-AES128-GCM-SHA256:kEDH+AESGCM:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA:ECDHE-ECDSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-DSS-AES128-SHA256:DHE-RSA-AES256-SHA256:DHE-DSS-AES256-SHA:DHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA256:AES256-SHA256:AES128-SHA:AES256-SHA:AES:CAMELLIA:DES-CBC3-SHA:!aNULL:!eNULL:!EXPORT:!LOW:!MEDIUM:!DES:!RC4:!MD5:!PSK:!aECDH:!EDH-DSS-DES-CBC3-SHA:!EDH-RSA-DES-CBC3-SHA:!KRB5-DES-CBC3-SHA
+ssl_cipher_list=ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-DSS-AES128-GCM-SHA256:kEDH+AESGCM:ECDHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA:ECDHE-ECDSA-AES256-SHA:DHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA:DHE-DSS-AES128-SHA256:DHE-RSA-AES256-SHA256:DHE-DSS-AES256-SHA:DHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA256:AES256-SHA256:AES128-SHA:AES256-SHA:AES:CAMELLIA:DES-CBC3-SHA:!aNULL:!eNULL:!EXPORT:!LOW:!MEDIUM:!DES:!RC4:!MD5:!PSK:!aECDH:!EDH-DSS-DES-CBC3-SHA:!EDH-RSA-DES-CBC3-SHA:!KRB5-DES-CBC3-SHA:!SHA1:!SHA256:!SHA384
 ssl_prefer_server_ciphers = yes
 ssl_dh = </etc/dovecot/dh.pem
 # Plaintext login. This is safe and easy thanks to SSL.
