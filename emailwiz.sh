@@ -249,7 +249,7 @@ account required        pam_unix.so' >> /etc/pam.d/dovecot
 # OpenDKIM is a way to authenticate your email so you can send to such services
 # without a problem.
 
-# Create an OpenDKIM key in the proper place with proper permissions.
+# Create an OpenDKIM key
 echo 'Generating OpenDKIM keys...'
 mkdir -p /etc/postfix/dkim
 opendkim-genkey -D /etc/postfix/dkim/ -d "$domain" -s "$subdom"
