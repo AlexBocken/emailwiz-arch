@@ -286,7 +286,7 @@ grep -q '^Socket\s*inet:12301@localhost' /etc/opendkim/opendkim.conf || echo 'So
 echo 'Configuring Postfix with OpenDKIM settings...'
 postconf -e 'smtpd_sasl_security_options = noanonymous, noplaintext'
 postconf -e 'smtpd_sasl_tls_security_options = noanonymous'
-postconf -e "myhostname = $domain"
+postconf -e "myhostname = $maildomain"
 postconf -e 'milter_default_action = accept'
 postconf -e 'milter_protocol = 6'
 postconf -e 'smtpd_milters = inet:localhost:12301'
