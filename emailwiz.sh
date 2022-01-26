@@ -56,6 +56,9 @@ echo "Configuring Postfix's main.cf..."
 # Necessary to later start Postfix
 postalias /etc/postfix/aliases
 
+# List of domains that this machine considers itself the final destination for
+postconf -e 'mydestination = $myhostname, localhost.$mydomain, localhost, $mydomain'
+
 # Change the cert/key files to the default locations of the Let's Encrypt cert/key
 postconf -e "smtpd_tls_key_file=$certdir/privkey.pem"
 postconf -e "smtpd_tls_cert_file=$certdir/fullchain.pem"
@@ -91,9 +94,6 @@ postconf -e 'tls_ssl_options = NO_RENEGOTIATION'
 postconf -e 'smtpd_sasl_auth_enable = yes'
 postconf -e 'smtpd_sasl_type = dovecot'
 postconf -e 'smtpd_sasl_path = private/auth'
-
-# Sender and recipient restrictions
-postconf -e 'smtpd_recipient_restrictions = permit_sasl_authenticated, permit_mynetworks, reject_unauth_destination'
 
 # Prevent IP address leaks (also removes ip from incoming email)
 postconf -e 'header_checks = regexp:/etc/postfix/header_checks'
