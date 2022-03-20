@@ -29,14 +29,14 @@
 # Clear out /etc/postfix and /etc/dovecot yourself if needbe.
 
 echo 'Installing programs...'
-pacman -Syu --needed postfix dovecot opendkim spamassassin pigeonhole
+pacman -Syu --needed postfix dovecot opendkim spamassassin pigeonhole certbot
 # Put your domain.tld here (not your subdomain)
 domain='domain.tld'
 subdom=${MAIL_SUBDOM:-mail}
 maildomain="$subdom.$domain"
 certdir="/etc/letsencrypt/live/$maildomain"
 
-[ ! -d "$certdir" ] && certdir="$(dirname "$(certbot certificates 2>/dev/null | grep "$maildomain\|*.$domain" -A 2 | awk '/Certificate Path/ {print $3}' | head -n1)")"
+[ ! -d "$certdir" ] && certdir="$(dirname "$(certbot certificates 2>/dev/null | grep -A 2 "$maildomain\|*.$domain" | awk '/Certificate Path/ {print $3}' | head -n1)")"
 
 [ ! -d "$certdir" ] && echo "Note! You must first have a Let's Encrypt Certbot HTTPS/SSL Certificate for $maildomain.
 
