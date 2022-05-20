@@ -15,9 +15,7 @@
 # DEPENDENCIES BEFORE RUNNING
 
 # 1. Have a Arch system with a static IP and all that. Pretty much any
-# default VPS offered by a company will have all the basic stuff you need. This
-# script might run on Artix as well. Haven't tried it. If you have, tell me
-# what happens.
+# default VPS offered by a company will have all the basic stuff you need.
 
 # 2. Have a Let's Encrypt SSL certificate for $maildomain. You might need one
 # for $domain as well, but they're free with Let's Encypt so you should have
@@ -32,6 +30,9 @@ echo 'Installing programs...'
 pacman -Syu --needed postfix dovecot opendkim spamassassin pigeonhole certbot
 # Put your domain.tld here (not your subdomain)
 domain='domain.tld'
+
+[ "$domain" = "domain.tld" ] && echo 'Fill in your domain name!' && exit 1
+
 subdom=${MAIL_SUBDOM:-mail}
 maildomain="$subdom.$domain"
 certdir="/etc/letsencrypt/live/$maildomain"
@@ -121,10 +122,12 @@ submission inet n       -       n       -       -       smtpd
   -o smtpd_tls_security_level=encrypt
   -o smtpd_sasl_auth_enable=yes
   -o smtpd_tls_auth_only=yes
+  -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
 smtps     inet  n       -       n       -       -       smtpd
   -o syslog_name=postfix/smtps
   -o smtpd_tls_wrappermode=yes
   -o smtpd_sasl_auth_enable=yes
+  -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
 spamassassin unix -     n       n       -       -       pipe
   flags=R user=spamd argv=/usr/bin/vendor_perl/spamc -e /usr/bin/sendmail -oi -f ${sender} ${recipient}' >> /etc/postfix/master.cf
 
@@ -158,14 +161,14 @@ ssl_dh = </etc/dovecot/dh.pem
 auth_mechanisms = plain login
 auth_username_format = %n
 
-protocols = \$protocols imap
+protocols = imap lmtp
 
 # Search for valid users in /etc/passwd
 userdb {
 	driver = passwd
 }
 
-#Fallback: Use plain old PAM to find user passwords
+# Fallback: Use plain old PAM to find user passwords
 passdb {
 	driver = pam
 }
@@ -184,7 +187,6 @@ namespace inbox {
 	mailbox Junk {
 		special_use = \\Junk
 		auto = subscribe
-		autoexpunge = 30d
 	}
 
 	mailbox Sent {
@@ -211,18 +213,12 @@ service auth {
 	}
 }
 
-protocol lda {
-	mail_plugins = \$mail_plugins sieve
-}
-
 protocol lmtp {
 	mail_plugins = \$mail_plugins sieve
 }
 
 plugin {
-	sieve = ~/.dovecot.sieve
 	sieve_default = /var/lib/dovecot/sieve/default.sieve
-	sieve_dir = ~/.sieve
 	sieve_global = /var/lib/dovecot/sieve/
 }" > /etc/dovecot/dovecot.conf
 
@@ -240,9 +236,10 @@ chown -R vmail:vmail /var/lib/dovecot
 sievec /var/lib/dovecot/sieve/default.sieve
 
 echo 'Preparing user authentication...'
+
 grep -q nullok /etc/pam.d/dovecot ||
-echo 'auth    required        pam_unix.so nullok
-account required        pam_unix.so' >> /etc/pam.d/dovecot
+echo 'auth    required pam_unix.so nullok
+account required pam_unix.so' >> /etc/pam.d/dovecot
 
 # OpenDKIM
 
@@ -257,10 +254,11 @@ account required        pam_unix.so' >> /etc/pam.d/dovecot
 # Create an OpenDKIM key
 echo 'Generating OpenDKIM keys...'
 mkdir -p /etc/postfix/dkim
-opendkim-genkey -D /etc/postfix/dkim/ -d "$domain" -s "$subdom"
+opendkim-genkey -D /etc/postfix/dkim -d "$domain" -s "$subdom"
 
 # Generate the OpenDKIM info:
 echo 'Configuring OpenDKIM...'
+
 grep -q "$domain" /etc/postfix/dkim/keytable 2>/dev/null ||
 echo "$subdom._domainkey.$domain $domain:$subdom:/etc/postfix/dkim/$subdom.private" >> /etc/postfix/dkim/keytable
 
@@ -271,7 +269,8 @@ grep -q '127.0.0.1' /etc/postfix/dkim/trustedhosts 2>/dev/null ||
 echo '127.0.0.1' >> /etc/postfix/dkim/trustedhosts
 
 # ...and source it from opendkim.conf
-grep -q '^KeyTable' /etc/opendkim/opendkim.conf 2>/dev/null || echo "KeyTable file:/etc/postfix/dkim/keytable
+grep -q '^KeyTable' /etc/opendkim/opendkim.conf 2>/dev/null ||
+echo "KeyTable file:/etc/postfix/dkim/keytable
 SigningTable refile:/etc/postfix/dkim/signingtable
 InternalHosts refile:/etc/postfix/dkim/trustedhosts
 Domain $domain" >> /etc/opendkim/opendkim.conf
@@ -280,7 +279,8 @@ sed -i '/^#Canonicalization/s/simple/relaxed\/simple/' /etc/opendkim/opendkim.co
 sed -i '/^#Canonicalization/s/^#//' /etc/opendkim/opendkim.conf
 
 sed -i '/Socket/s/^#*/#/' /etc/opendkim/opendkim.conf
-grep -q '^Socket\s*inet:12301@localhost' /etc/opendkim/opendkim.conf || echo 'Socket inet:12301@localhost' >> /etc/opendkim/opendkim.conf
+grep -q '^Socket\s*inet:12301@localhost' /etc/opendkim/opendkim.conf ||
+echo 'Socket inet:12301@localhost' >> /etc/opendkim/opendkim.conf
 
 # Here we add to postconf the needed settings for working with OpenDKIM
 echo 'Configuring Postfix with OpenDKIM settings...'
@@ -320,6 +320,7 @@ $dkimentry
 
 $dmarcentry
 
+Note: You will probably need to modify this later (eg. adding your ip)
 $spfentry
 \033[0m
 NOTE: You may need to omit the \`.$domain\` portion at the beginning if
@@ -328,5 +329,4 @@ inputting them in a registrar's web interface.
 Also, these are now saved to \033[34m~/dns_emailwizard\033[0m in case you want them in a file.
 
 Once you do that, you're done! Check the README for how to add users/accounts
-and how to log in.
-"
+and how to log in.\n"
