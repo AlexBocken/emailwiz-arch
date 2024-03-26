@@ -178,7 +178,7 @@ passdb {
 mail_location = maildir:~/Mail:INBOX=~/Mail/Inbox:LAYOUT=fs
 namespace inbox {
 	inbox = yes
-	
+
 	mailbox Drafts {
 		special_use = \\Drafts
 		auto = subscribe
@@ -305,6 +305,9 @@ spfentry="$domain	TXT	v=spf1 mx a:$maildomain -all"
 echo "$dkimentry
 $dmarcentry
 $spfentry" > "$HOME/dns_emailwizard"
+
+## Fix permissions for opendkim
+chown opendkim:opendkim "/etc/postfix/dkim/${subdom}.private" "/etc/postfix/dkim/${subdom}.txt"
 
 printf "\033[31m
  _   _
