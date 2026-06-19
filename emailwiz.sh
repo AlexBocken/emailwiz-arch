@@ -65,8 +65,10 @@ postconf -e "smtpd_tls_key_file=$certdir/privkey.pem"
 postconf -e "smtpd_tls_cert_file=$certdir/fullchain.pem"
 postconf -e "smtp_tls_CAfile=$certdir/cert.pem"
 
-# DH parameters
-postconf -e 'smtpd_tls_dh1024_param_file = /etc/dovecot/dh.pem'
+# DH parameters: no longer set in Postfix. Since 3.9 the
+# smtpd_tls_dh1024_param_file parameter is deprecated (slated for removal) and
+# Postfix negotiates DH via its built-in FFDHE groups by default. The dh.pem
+# generated below is still used by Dovecot (ssl_dh).
 
 # Enable, but do not require TLS. Requiring it with other server would cause
 # mail delivery problems and requiring it locally would cause many other
@@ -95,6 +97,26 @@ postconf -e 'tls_ssl_options = NO_RENEGOTIATION'
 postconf -e 'smtpd_sasl_auth_enable = yes'
 postconf -e 'smtpd_sasl_type = dovecot'
 postconf -e 'smtpd_sasl_path = private/auth'
+
+# Anti-relay hardening: accept mail only from authenticated users, from our own
+# networks, or for domains we are responsible for, and reject recipients in
+# non-resolvable domains. Without this an open-relay misconfiguration is easy.
+postconf -e 'smtpd_recipient_restrictions = permit_sasl_authenticated, permit_mynetworks, reject_unauth_destination, reject_unknown_recipient_domain'
+
+# Hardening: do not leak whether an address exists via the SMTP VRFY command.
+postconf -e 'disable_vrfy_command = yes'
+
+# Hide the Postfix version/mail_name in the SMTP banner.
+postconf -e 'smtpd_banner = $myhostname ESMTP'
+
+# Allow larger messages/attachments (~50 MB) instead of the 10 MB default.
+postconf -e 'message_size_limit = 51200000'
+
+# Virtual alias map for address forwarding (e.g. dmarc@, postmaster@).
+# Create the table if absent and compile it so lookups don't error.
+[ -f /etc/postfix/virtual ] || touch /etc/postfix/virtual
+postconf -e 'virtual_alias_maps = lmdb:/etc/postfix/virtual'
+postmap /etc/postfix/virtual
 
 # Prevent IP address leaks (also removes ip from incoming email)
 postconf -e 'header_checks = regexp:/etc/postfix/header_checks'
