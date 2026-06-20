@@ -165,6 +165,16 @@ openssl dhparam -out /etc/dovecot/dh.pem 3072
 
 echo 'Creating Dovecot config...'
 
+# The IMAPSieve auto-learn blocks below need Dovecot/Pigeonhole >= 2.4.3. On
+# 2.4.1-2.4.2 the admin-scoped mailbox { sieve_script } blocks SILENTLY no-op
+# (the move succeeds, the script never fires, Bayes is never updated), so warn
+# loudly rather than leave the user with broken-but-quiet auto-learning.
+dovecot_version="$(dovecot --version 2>/dev/null | awk '{print $1}')"
+if [ -n "$dovecot_version" ] &&
+	[ "$(printf '2.4.3\n%s\n' "$dovecot_version" | sort -V | head -n1)" != '2.4.3' ]; then
+	printf '\033[31mWARNING:\033[0m Dovecot %s < 2.4.3 — IMAPSieve spam/ham auto-learning will silently no-op.\n' "$dovecot_version"
+fi
+
 echo "# Note that in the Dovecot conf, you can use:
 # %u for username
 # %n for the name in name@domain.tld
@@ -209,6 +219,15 @@ namespace inbox {
 	mailbox Junk {
 		special_use = \\Junk
 		auto = subscribe
+
+		# Filing a message into Junk trains it as spam (IMAPSieve auto-learn).
+		# cause = append copy is essential: many IMAP clients move into Junk via
+		# APPEND, not COPY, and a copy-only rule would never fire for them.
+		sieve_script learn-spam {
+			type = before
+			cause = append copy
+			path = /var/lib/dovecot/sieve/learn-spam.sieve
+		}
 	}
 
 	mailbox Sent {
@@ -222,6 +241,38 @@ namespace inbox {
 
 	mailbox Archive {
 		special_use = \\Archive
+	}
+}
+
+# IMAPSieve auto-learn (Dovecot 2.4 syntax). The learner runs as the mailbox
+# user, so it never touches the Bayes DB directly: it pipes the message to
+# spamc --learntype and spamd (running with --allow-tell) does the privileged
+# learning. This is why no Bayes-DB permissions need opening to mail users.
+protocol imap {
+	mail_plugins {
+		imap_sieve = yes
+	}
+}
+
+sieve_plugins {
+	sieve_imapsieve = yes
+	sieve_extprograms = yes
+}
+
+sieve_global_extensions {
+	vnd.dovecot.pipe = yes
+}
+
+sieve_pipe_bin_dir = /usr/lib/dovecot/sieve
+
+# Moving a message OUT of Junk trains it as ham. This matches on the source
+# mailbox; it is best-effort with APPEND-based clients (an APPEND carries no
+# origin). Spam (into Junk) is the reliable, important direction.
+imapsieve_from Junk {
+	sieve_script learn-ham {
+		type = before
+		cause = copy
+		path = /var/lib/dovecot/sieve/learn-ham.sieve
 	}
 }
 
@@ -256,6 +307,39 @@ if header :contains \"X-Spam-Flag\" \"YES\"
 grep -q '^vmail:' /etc/passwd || useradd vmail
 chown -R vmail:vmail /var/lib/dovecot
 sievec /var/lib/dovecot/sieve/default.sieve
+
+# --- IMAPSieve auto-learn: pipe scripts + sieve sources ---
+# The pipe scripts are executed AS THE MAILBOX USER but are shared globally, so
+# they must be root:root, world read+exec, and never writable by mail users (a
+# writable pipe script = code execution in the user's IMAP session). Dovecot's
+# extprograms also refuses loosely-permissioned scripts, so 0755 (not 0775/0777).
+# Full /usr/bin/vendor_perl/ path: spamc is not on PATH in Dovecot's restricted
+# exec environment on Arch.
+mkdir -p /usr/lib/dovecot/sieve
+printf '#!/bin/sh\nexec /usr/bin/vendor_perl/spamc --learntype=spam --username spamd\n' \
+	> /usr/lib/dovecot/sieve/learn-spam.sh
+printf '#!/bin/sh\nexec /usr/bin/vendor_perl/spamc --learntype=ham --username spamd\n' \
+	> /usr/lib/dovecot/sieve/learn-ham.sh
+chown root:root /usr/lib/dovecot/sieve/learn-spam.sh /usr/lib/dovecot/sieve/learn-ham.sh
+chmod 0755 /usr/lib/dovecot/sieve/learn-spam.sh /usr/lib/dovecot/sieve/learn-ham.sh
+
+# Sieve sources. The Trash guard on the ham learner avoids mislearning ham when
+# spam is merely being deleted out of Junk.
+printf 'require ["vnd.dovecot.pipe", "copy", "imapsieve"];\npipe :copy "learn-spam.sh";\n' \
+	> /var/lib/dovecot/sieve/learn-spam.sieve
+printf 'require ["vnd.dovecot.pipe", "copy", "imapsieve", "environment"];\nif environment :is "imap.mailbox" "Trash" { stop; }\npipe :copy "learn-ham.sh";\n' \
+	> /var/lib/dovecot/sieve/learn-ham.sieve
+
+# Standalone sievec doesn't load the imapsieve/extprograms plugins, so name them
+# explicitly with -P. The + prefix ADDS the extensions instead of replacing the
+# default set (without + you lose copy/environment). Pre-compiling matters: the
+# source dir is root-owned, so without a prebuilt .svbin Dovecot (running as the
+# mail user) recompiles on every trigger and logs a permission warning each time.
+for s in learn-spam learn-ham; do
+	sievec -P sieve_imapsieve -P sieve_extprograms -x '+imapsieve +vnd.dovecot.pipe' \
+		"/var/lib/dovecot/sieve/$s.sieve"
+done
+chmod 0644 /var/lib/dovecot/sieve/learn-spam.svbin /var/lib/dovecot/sieve/learn-ham.svbin
 
 echo 'Preparing user authentication...'
 
@@ -317,7 +401,38 @@ postconf -e 'mailbox_command = /usr/lib/dovecot/deliver'
 
 useradd -mG mail dmarc
 
+# SpamAssassin: Bayes + delegated learning
+echo 'Configuring SpamAssassin for Bayes auto-learning...'
+
+# sa-update and the Bayes DB are written by the spamd user; the whole state tree
+# must be spamd-owned or updates/learning fail with permission errors.
+chown -R spamd:spamd /var/lib/spamassassin
+
+# Make sure Bayes is on — the IMAPSieve learners are pointless without it. Note
+# Bayes only starts scoring after >=200 spam AND >=200 ham have been learned, so
+# expect no effect until the corpus (seeded by the learners over time) is built.
+mkdir -p /etc/mail/spamassassin
+grep -q '^use_bayes ' /etc/mail/spamassassin/local.cf 2>/dev/null ||
+printf 'use_bayes 1\nbayes_auto_learn 1\n' >> /etc/mail/spamassassin/local.cf
+
+# spamc --learntype (used by the Dovecot pipe scripts) only works if spamd runs
+# with --allow-tell. Re-declare ExecStart with the package's existing options
+# plus --allow-tell, reading the base command from the shipped unit rather than
+# hardcoding flags that vary by package version.
+mkdir -p /etc/systemd/system/spamassassin.service.d
+sa_exec="$(systemctl cat spamassassin.service | sed -n 's/^ExecStart=//p' | grep -v '^$' | tail -n1)"
+case "$sa_exec" in
+	*--allow-tell*) : ;;
+	*) sa_exec="$sa_exec --allow-tell" ;;
+esac
+printf '[Service]\nExecStart=\nExecStart=%s\n' "$sa_exec" \
+	> /etc/systemd/system/spamassassin.service.d/override.conf
+systemctl daemon-reload
+
 systemctl enable --now spamassassin opendkim dovecot postfix
+# Ensure the --allow-tell ExecStart is live even on a re-run where spamd was
+# already running (enable --now won't restart an active unit).
+systemctl restart spamassassin
 
 pval="$(tr -d "\n" </etc/postfix/dkim/$subdom.txt | sed "s/k=rsa.* \"p=/k=rsa; p=/;s/\"\s*\"//;s/\"\s*).*//" | grep -o "p=.*")"
 dkimentry="$subdom._domainkey.$domain	TXT	v=DKIM1; k=rsa; $pval"
