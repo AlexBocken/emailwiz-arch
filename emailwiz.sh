@@ -27,7 +27,7 @@
 # Clear out /etc/postfix and /etc/dovecot yourself if needbe.
 
 echo 'Installing programs...'
-pacman -Syu --needed postfix dovecot opendkim spamassassin pigeonhole certbot
+pacman -Syu --needed postfix dovecot opendkim spamassassin pigeonhole certbot clamav
 # Put your domain.tld here (not your subdomain)
 domain='domain.tld'
 
@@ -395,8 +395,12 @@ postconf -e 'smtpd_sasl_tls_security_options = noanonymous'
 postconf -e "myhostname = $maildomain"
 postconf -e 'milter_default_action = accept'
 postconf -e 'milter_protocol = 6'
-postconf -e 'smtpd_milters = inet:localhost:12301'
-postconf -e 'non_smtpd_milters = inet:localhost:12301'
+# smtpd_milters / non_smtpd_milters are LISTS: chain ClamAV after the OpenDKIM
+# milter. A second standalone line would silently override the first and disable
+# OpenDKIM. milter_default_action = accept (set above) means fail-open if a milter
+# is unreachable. DKIM-then-ClamAV order is fine; they are independent.
+postconf -e 'smtpd_milters = inet:localhost:12301, unix:/var/spool/postfix/private/clamav-milter'
+postconf -e 'non_smtpd_milters = inet:localhost:12301, unix:/var/spool/postfix/private/clamav-milter'
 postconf -e 'mailbox_command = /usr/lib/dovecot/deliver'
 
 useradd -mG mail dmarc
@@ -429,10 +433,80 @@ printf '[Service]\nExecStart=\nExecStart=%s\n' "$sa_exec" \
 	> /etc/systemd/system/spamassassin.service.d/override.conf
 systemctl daemon-reload
 
-systemctl enable --now spamassassin opendkim dovecot postfix
+# ClamAV milter: scan mail during the SMTP transaction and reject infected mail
+# before it is ever written to a mailbox. The milter talks to clamd. The Arch
+# clamav package ships clamd (clamav-daemon.service) and freshclam but NOT a
+# milter service, so we create the unit ourselves.
+echo 'Configuring ClamAV milter...'
+
+# Milter config. The reject message is generic on purpose: no virus name, no
+# "ClamAV"/"virus" wording, so the bounce can't fingerprint the scanner or act as
+# a tuning oracle. AddHeader No keeps X-Virus-* headers (tool/version/host) off
+# outbound mail — privacy, and it avoids header rewrites that can break DKIM.
+# OnFail Defer temp-fails (4xx) if clamd is down so nothing slips through
+# unscanned. ClamdSocket matches clamav-daemon.socket's /run/clamav/clamd.ctl.
+cat > /etc/clamav/clamav-milter.conf <<'EOF'
+MilterSocket /var/spool/postfix/private/clamav-milter
+MilterSocketMode 660
+MilterSocketGroup clamav
+FixStaleSocket yes
+User clamav
+ClamdSocket unix:/run/clamav/clamd.ctl
+OnInfected Reject
+RejectMsg "Message rejected by content policy"
+OnFail Defer
+AddHeader No
+LogSyslog yes
+LogInfected Full
+PidFile /run/clamav/clamav-milter.pid
+TemporaryDirectory /tmp
+EOF
+chmod 0644 /etc/clamav/clamav-milter.conf
+
+# Milter service. It must start as root so it can bind its socket inside
+# Postfix's root-owned private/ dir, then it drops to the User clamav from the
+# conf above. Do NOT add User= here or socket creation breaks.
+cat > /etc/systemd/system/clamav-milter.service <<'EOF'
+[Unit]
+Description=ClamAV Milter (clamav-milter)
+Requires=clamav-daemon.service
+After=clamav-daemon.service
+Before=postfix.service
+
+[Service]
+Type=forking
+PIDFile=/run/clamav/clamav-milter.pid
+ExecStart=/usr/bin/clamav-milter --config-file /etc/clamav/clamav-milter.conf
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+chmod 0644 /etc/systemd/system/clamav-milter.service
+
+# Ensure the runtime/state dirs exist before starting anything (the pacman
+# tmpfiles hook normally handles this; be defensive on a fresh install).
+systemd-tmpfiles --create clamav.conf
+
+# clamd refuses to start without a virus database, so pull one now. Run as root;
+# freshclam drops to the clamav DatabaseOwner for the actual file writes.
+echo 'Downloading initial ClamAV virus database (this may take a while)...'
+freshclam
+
+# Postfix must be in the clamav group to read the 660 milter socket. Supplementary
+# group membership is fixed at process start, so a FULL postfix restart (below) is
+# required — a reload leaves the socket Permission denied and mail goes unscanned.
+gpasswd -a postfix clamav
+
+systemctl daemon-reload
+
+systemctl enable --now clamav-daemon clamav-freshclam clamav-milter spamassassin opendkim dovecot postfix
 # Ensure the --allow-tell ExecStart is live even on a re-run where spamd was
 # already running (enable --now won't restart an active unit).
 systemctl restart spamassassin
+# Full restart (not reload) so postfix picks up its new clamav group membership.
+systemctl restart postfix
 
 pval="$(tr -d "\n" </etc/postfix/dkim/$subdom.txt | sed "s/k=rsa.* \"p=/k=rsa; p=/;s/\"\s*\"//;s/\"\s*).*//" | grep -o "p=.*")"
 dkimentry="$subdom._domainkey.$domain	TXT	v=DKIM1; k=rsa; $pval"

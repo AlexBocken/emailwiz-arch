@@ -17,3 +17,10 @@ The script wires up SpamAssassin Bayes auto-learning through Dovecot IMAPSieve
 (filing into Junk learns spam, moving out learns ham). To enable it on a server
 that was set up with an older version of the script, see
 [docs/spam-autolearn.md](docs/spam-autolearn.md).
+
+## Malware scanning
+
+The script runs a ClamAV milter that scans mail during the SMTP transaction and
+rejects infected messages before delivery. To enable it on a server that was set
+up with an older version of the script, see
+[docs/clamav-milter.md](docs/clamav-milter.md).
